@@ -7,16 +7,16 @@ from typing import TYPE_CHECKING, Any, List, Optional
 
 from wandb.proto import wandb_server_pb2 as spb
 
-from . import tracelog
-
 if TYPE_CHECKING:
     from wandb.proto import wandb_internal_pb2 as pb
 
 
 class SockClientClosedError(Exception):
-    """Socket has been closed"""
+    """Raised on operations on a closed socket."""
 
-    pass
+
+class SockClientTimeoutError(Exception):
+    """Raised if the server didn't respond before the timeout."""
 
 
 class SockBuffer:
@@ -120,7 +120,7 @@ class SockClient:
 
     def _sendall_with_error_handle(self, data: bytes) -> None:
         # This is a helper function for sending data in a retry fashion.
-        # Similar to the sendall() function in the socket module, but with a
+        # Similar to the sendall() function in the socket module, but with
         # an error handling in case of timeout.
         total_sent = 0
         total_data = len(data)
@@ -143,7 +143,6 @@ class SockClient:
                     time.sleep(self._retry_delay - delta_time)
 
     def _send_message(self, msg: Any) -> None:
-        tracelog.log_message_send(msg, self._sockid)
         raw_size = msg.ByteSize()
         data = msg.SerializeToString()
         assert len(data) == raw_size, "invalid serialization"
@@ -151,72 +150,26 @@ class SockClient:
         with self._lock:
             self._sendall_with_error_handle(header + data)
 
-    def send_server_request(self, msg: Any) -> None:
+    def send_server_request(self, msg: spb.ServerRequest) -> None:
         self._send_message(msg)
 
-    def send_server_response(self, msg: Any) -> None:
+    def send_server_response(self, msg: spb.ServerResponse) -> None:
         try:
             self._send_message(msg)
         except BrokenPipeError:
             # TODO(jhr): user thread might no longer be around to receive responses to
-            # things like network status poll loop, there might be a better way to quiesce
+            #  things like network status poll loop, there might be a better way to quiesce
             pass
-
-    def send_and_recv(
-        self,
-        *,
-        inform_init: Optional[spb.ServerInformInitRequest] = None,
-        inform_start: Optional[spb.ServerInformStartRequest] = None,
-        inform_attach: Optional[spb.ServerInformAttachRequest] = None,
-        inform_finish: Optional[spb.ServerInformFinishRequest] = None,
-        inform_teardown: Optional[spb.ServerInformTeardownRequest] = None,
-    ) -> spb.ServerResponse:
-        self.send(
-            inform_init=inform_init,
-            inform_start=inform_start,
-            inform_attach=inform_attach,
-            inform_finish=inform_finish,
-            inform_teardown=inform_teardown,
-        )
-        # TODO: this solution is fragile, but for checking attach
-        # it should be relatively stable.
-        # This pass would be solved as part of the fix in https://wandb.atlassian.net/browse/WB-8709
-        response = self.read_server_response(timeout=1)
-        if response is None:
-            raise Exception("No response")
-        return response
-
-    def send(
-        self,
-        *,
-        inform_init: Optional[spb.ServerInformInitRequest] = None,
-        inform_start: Optional[spb.ServerInformStartRequest] = None,
-        inform_attach: Optional[spb.ServerInformAttachRequest] = None,
-        inform_finish: Optional[spb.ServerInformFinishRequest] = None,
-        inform_teardown: Optional[spb.ServerInformTeardownRequest] = None,
-    ) -> None:
-        server_req = spb.ServerRequest()
-        if inform_init:
-            server_req.inform_init.CopyFrom(inform_init)
-        elif inform_start:
-            server_req.inform_start.CopyFrom(inform_start)
-        elif inform_attach:
-            server_req.inform_attach.CopyFrom(inform_attach)
-        elif inform_finish:
-            server_req.inform_finish.CopyFrom(inform_finish)
-        elif inform_teardown:
-            server_req.inform_teardown.CopyFrom(inform_teardown)
-        else:
-            raise Exception("unmatched")
-        self.send_server_request(server_req)
 
     def send_record_communicate(self, record: "pb.Record") -> None:
         server_req = spb.ServerRequest()
+        server_req.request_id = record.control.mailbox_slot
         server_req.record_communicate.CopyFrom(record)
         self.send_server_request(server_req)
 
     def send_record_publish(self, record: "pb.Record") -> None:
         server_req = spb.ServerRequest()
+        server_req.request_id = record.control.mailbox_slot
         server_req.record_publish.CopyFrom(record)
         self.send_server_request(server_req)
 
@@ -255,10 +208,8 @@ class SockClient:
                 data = self._sock.recv(self._bufsize)
             except socket.timeout:
                 break
-            except ConnectionResetError:
-                raise SockClientClosedError
-            except OSError:
-                raise SockClientClosedError
+            except OSError as e:
+                raise SockClientClosedError from e
             finally:
                 if timeout:
                     self._sock.settimeout(None)
@@ -276,7 +227,6 @@ class SockClient:
             return None
         rec = spb.ServerRequest()
         rec.ParseFromString(data)
-        tracelog.log_message_recv(rec, self._sockid)
         return rec
 
     def read_server_response(
@@ -287,5 +237,4 @@ class SockClient:
             return None
         rec = spb.ServerResponse()
         rec.ParseFromString(data)
-        tracelog.log_message_recv(rec, self._sockid)
         return rec
