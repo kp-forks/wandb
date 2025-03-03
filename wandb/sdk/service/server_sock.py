@@ -4,12 +4,11 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
+import wandb
 from wandb.proto import wandb_server_pb2 as spb
+from wandb.sdk.internal.settings_static import SettingsStatic
 
-from ..lib import tracelog
-from ..lib.proto_util import settings_dict_from_pbmap
 from ..lib.sock_client import SockClient, SockClientClosedError
-from .service_base import _pbmap_apply_dict
 from .streams import StreamMux
 
 if TYPE_CHECKING:
@@ -45,7 +44,10 @@ class SockServerInterfaceReaderThread(threading.Thread):
     _stopped: "Event"
 
     def __init__(
-        self, clients: ClientDict, iface: "InterfaceRelay", stopped: "Event"
+        self,
+        clients: ClientDict,
+        iface: "InterfaceRelay",
+        stopped: "Event",
     ) -> None:
         self._iface = iface
         self._clients = clients
@@ -54,7 +56,6 @@ class SockServerInterfaceReaderThread(threading.Thread):
         self._stopped = stopped
 
     def run(self) -> None:
-        assert self._iface.relay_q
         while not self._stopped.is_set():
             try:
                 result = self._iface.relay_q.get(timeout=1)
@@ -66,12 +67,12 @@ class SockServerInterfaceReaderThread(threading.Thread):
             except ValueError:
                 # queue is closed
                 break
-            tracelog.log_message_dequeue(result, self._iface.relay_q)
             sockid = result.control.relay_id
             assert sockid
             sock_client = self._clients.get_client(sockid)
             assert sock_client
             sresp = spb.ServerResponse()
+            sresp.request_id = result.control.mailbox_slot
             sresp.result_communicate.CopyFrom(result)
             sock_client.send_server_response(sresp)
 
@@ -105,7 +106,7 @@ class SockServerReadThread(threading.Thread):
             assert sreq, "read_server_request should never timeout"
             sreq_type = sreq.WhichOneof("server_request_type")
             shandler_str = "server_" + sreq_type  # type: ignore
-            shandler: "Callable[[spb.ServerRequest], None]" = getattr(  # type: ignore
+            shandler: Callable[[spb.ServerRequest], None] = getattr(  # type: ignore
                 self, shandler_str, None
             )
             assert shandler, f"unknown handle: {shandler_str}"  # type: ignore
@@ -122,7 +123,7 @@ class SockServerReadThread(threading.Thread):
     def server_inform_init(self, sreq: "spb.ServerRequest") -> None:
         request = sreq.inform_init
         stream_id = request._info.stream_id
-        settings = settings_dict_from_pbmap(request._settings_map)
+        settings = SettingsStatic(request.settings)
         self._mux.add_stream(stream_id, settings=settings)
 
         iface = self._mux.get_stream(stream_id).interface
@@ -137,7 +138,7 @@ class SockServerReadThread(threading.Thread):
     def server_inform_start(self, sreq: "spb.ServerRequest") -> None:
         request = sreq.inform_start
         stream_id = request._info.stream_id
-        settings = settings_dict_from_pbmap(request._settings_map)
+        settings = SettingsStatic(request.settings)
         self._mux.update_stream(stream_id, settings=settings)
         self._mux.start_stream(stream_id)
 
@@ -147,11 +148,13 @@ class SockServerReadThread(threading.Thread):
 
         self._clients.add_client(self._sock_client)
         inform_attach_response = spb.ServerInformAttachResponse()
-        _pbmap_apply_dict(
-            inform_attach_response._settings_map,
-            dict(self._mux._streams[stream_id]._settings),
+        inform_attach_response.settings.CopyFrom(
+            self._mux._streams[stream_id]._settings._proto,
         )
-        response = spb.ServerResponse(inform_attach_response=inform_attach_response)
+        response = spb.ServerResponse(
+            request_id=sreq.request_id,
+            inform_attach_response=inform_attach_response,
+        )
         self._sock_client.send_server_response(response)
         iface = self._mux.get_stream(stream_id).interface
 
@@ -201,7 +204,6 @@ class SockAcceptThread(threading.Thread):
         self._clients = ClientDict()
 
     def run(self) -> None:
-        self._sock.listen(5)
         read_threads = []
 
         while not self._stopped.is_set():
@@ -230,7 +232,7 @@ class DebugThread(threading.Thread):
         while True:
             time.sleep(30)
             for thread in threading.enumerate():
-                print(f"DEBUG: {thread.name}")
+                wandb.termwarn(f"DEBUG: {thread.name}")
 
 
 class SocketServer:
@@ -256,6 +258,7 @@ class SocketServer:
 
     def start(self) -> None:
         self._bind()
+        self._sock.listen(5)
         self._thread = SockAcceptThread(sock=self._sock, mux=self._mux)
         self._thread.start()
         # Note: Uncomment to figure out what thread is not exiting properly
@@ -269,8 +272,8 @@ class SocketServer:
                 # TODO(jhr): consider a more graceful shutdown in the future
                 # socket.shutdown() is a more heavy handed approach to interrupting socket.accept()
                 # in the future we might want to consider a more graceful shutdown which would involve setting
-                # a threading Event and then intiating one last connection just to close down the thread
-                # The advantage of the heavy handed approach is that it doesnt depend on the threads functioning
+                # a threading Event and then initiating one last connection just to close down the thread
+                # The advantage of the heavy handed approach is that it does not depend on the threads functioning
                 # properly, that is, if something has gone wrong, we probably want to use this hammer to shut things down
                 self._sock.shutdown(socket.SHUT_RDWR)
             except OSError:
