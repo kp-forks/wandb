@@ -12,7 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.29.14
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.80.0
 	github.com/getsentry/sentry-go v0.33.0
-	github.com/go-git/go-git/v5 v5.16.0
+	github.com/go-git/go-git/v5 v5.16.1
 	github.com/golang/mock v1.6.0
 	github.com/googleapis/gax-go/v2 v2.14.2
 	github.com/hashicorp/go-retryablehttp v0.7.7
@@ -26,9 +26,9 @@ require (
 	github.com/wandb/simplejsonext v0.0.0-20241203202201-90635f1d8677
 	gocloud.dev v0.41.0
 	golang.org/x/sync v0.14.0
-	golang.org/x/time v0.11.0
+	golang.org/x/time v0.12.0
 	google.golang.org/api v0.236.0
-	google.golang.org/grpc v1.72.2
+	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
 	gopkg.in/yaml.v3 v3.0.1
 )
