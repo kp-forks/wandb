@@ -1,3 +1,20 @@
+# v0.4.15 (2026-10-08)
+
+* **Dependency Update**: Update to smithy-go v1.28.4.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v0.4.14 (2026-10-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v0.4.13 (2026-10-01)
+
+* No change notes available for this release.
+
+# v0.4.12 (2026-09-30)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
 # v0.4.11 (2026-09-28)
 
 * **Bug Fix**: Add reassembly check for GetObject parts mode so mismatch between response part range and calculated position will throw error
